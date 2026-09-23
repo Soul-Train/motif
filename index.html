@@ -156,6 +156,12 @@
     background:var(--ink);color:#FFF;padding:12px 16px;border-radius:14px;font-size:14.5px;font-weight:700;z-index:40;
     display:none;max-width:90vw;text-align:center}
   .toast.show{display:block}
+  .queue{background:#FFF7E3;border-radius:18px;padding:14px 16px;margin-top:14px;box-shadow:var(--sh)}
+  .queue b{display:block;font-weight:800}
+  .queue p{margin:2px 0 0;font-size:13.5px;color:var(--soft)}
+  .queue .row{display:flex;gap:8px;margin-top:10px}
+  .queue .row .btn{margin-top:0;padding:12px}
+  .offline{background:var(--sand);border-radius:14px;padding:10px 14px;margin-top:14px;font-size:13.5px;font-weight:700;color:var(--soft)}
   .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 </style>
 </head>
@@ -172,7 +178,8 @@
       <button class="gear" data-act="settings" aria-label="Settings">&#9881;</button>
     </div>
 
-    <div class="facts" id="todayFacts"></div>
+    <div class="offline" id="offline" hidden>You’re offline. Voice notes get saved and sorted when you’re back, and you can always add entries by hand.</div>
+    <div class="facts" id="todayFacts" style="margin-top:14px"></div>
 
     <div class="capture">
       <button class="mic" id="mic" aria-label="Start talking">
@@ -185,6 +192,8 @@
       <button class="btn" id="logBtn" disabled>Log it</button>
       <div class="under"><button class="linkbtn" data-act="manual">Add an entry by hand</button></div>
     </div>
+
+    <div class="queue" id="queue" hidden></div>
 
     <div class="section">
       <div class="sechead"><h2>Today so far</h2><span class="hint" id="todayCount"></span></div>
@@ -236,7 +245,7 @@
       <label>Your name (for the greeting)<input id="sName" type="text" autocomplete="off"></label>
       <label>Gemini API key<input id="sKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key"></label>
       <p class="note">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
-      <label>Gemini model<input id="sModel" type="text" autocomplete="off" spellcheck="false"></label>
+      <p class="note" id="sModels">Model: picked automatically from your key, with backups if one is busy or out of free uses.</p>
       <label>Daily calorie target (sets the calendar colors)<input id="sTarget" type="number" inputmode="numeric" min="800" max="6000" step="50"></label>
       <button class="btn" data-act="savesettings">Save settings</button>
       <hr>
@@ -256,12 +265,13 @@
 "use strict";
 
 /* ---------- storage ---------- */
-var K_E = "daybook.entries.v1", K_S = "daybook.settings.v1";
+var K_E = "daybook.entries.v1", K_S = "daybook.settings.v1", K_Q = "daybook.queue.v1", K_M = "daybook.models.v1";
 function load(k, d){ try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch(e){ return d; } }
 function store(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); return true; }
   catch(e){ toast("Could not save. Phone storage may be full."); return false; } }
-var entries = load(K_E, []);
-var settings = Object.assign({ key:"", model:"gemini-2.5-flash", kcalTarget:2200, name:"Josh" }, load(K_S, {}));
+var entries = load(K_E, []), queue = [];
+var settings = Object.assign({ key:"", kcalTarget:2200, name:"Josh" }, load(K_S, {}));
+queue = load(K_Q, []);
 
 /* ---------- helpers ---------- */
 function $(s){ return document.querySelector(s); }
@@ -479,7 +489,7 @@ function renderDay(fm){
     '<button class="btn ghost" data-act="addday">Add to this day</button>';
 }
 
-function renderAll(){ renderToday(); if (!$("#vCal").hidden) renderCal(); }
+function renderAll(){ renderToday(); renderQueue(); if (!$("#vCal").hidden) renderCal(); }
 
 /* ---------- tabs ---------- */
 function showTab(id){
@@ -509,6 +519,7 @@ function normalize(e, said){
   return o;
 }
 function openConfirm(list, said, mode){
+  if (!said || mode === "edit") sortingQueueId = null;
   pending = list; pendingMode = mode; pendingSaid = said || "";
   $("#cTitle").textContent = mode === "edit" ? "Edit entry" : "Look right?";
   $("#cHint").textContent = mode === "edit" ? "Change anything, then save." : "Fix anything that landed wrong, then save.";
@@ -554,7 +565,8 @@ function saveCards(){
     if (i >= 0) entries[i] = clean[0]; else entries.push(clean[0]);
   } else {
     entries = entries.concat(clean);
-    if (pendingSaid) { $("#log").value = ""; updateLogBtn(); }
+    if (sortingQueueId) { dropQueued(sortingQueueId); sortingQueueId = null; }
+    else if (pendingSaid) { $("#log").value = ""; updateLogBtn(); }
   }
   if (!store(K_E, entries)) return;
   var msg = pendingMode === "edit" ? "Saved changes" : "Saved " + clean.length + (clean.length === 1 ? " entry" : " entries");
@@ -562,8 +574,8 @@ function saveCards(){
 }
 
 /* ---------- Gemini ---------- */
-function buildPrompt(text){
-  var n = new Date();
+function buildPrompt(text, when){
+  var n = when ? new Date(when) : new Date();
   return [
     "You sort a spoken daily health log into JSON entries.",
     "Right now it is " + n.toLocaleDateString("en-US", { weekday:"long" }) + " " + ymd(n) + " at " + hm(n) + " (24-hour clock).",
@@ -583,31 +595,137 @@ function buildPrompt(text){
     "", "Log:", '"""' + text + '"""'
   ].join("\n");
 }
-function parseWithGemini(text){
-  var model = (settings.model || "gemini-2.5-flash").trim();
-  var gc = { responseMimeType:"application/json", temperature:0.2 };
-  if (/^gemini-2\.5-flash/.test(model)) gc.thinkingConfig = { thinkingBudget:0 };
-  var url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) +
-    ":generateContent?key=" + encodeURIComponent(settings.key.trim());
-  return fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ contents:[{ role:"user", parts:[{ text: buildPrompt(text) }] }], generationConfig: gc }) })
-  .catch(function(){ throw new Error("Could not reach Gemini. Check your connection and try again."); })
-  .then(function(r){
-    return r.json().catch(function(){ return {}; }).then(function(j){
-      if (!r.ok) {
-        var m = (j.error && j.error.message) || "";
-        if (r.status === 429) throw new Error("Gemini's free limit is used up for now. Wait a minute, or try again tomorrow.");
-        if (r.status === 404) throw new Error('Gemini has no model called "' + model + '". Change it in Settings.');
-        if (r.status === 400 && /key/i.test(m) || r.status === 401 || r.status === 403) throw new Error("Gemini rejected the key. Check it in Settings.");
-        throw new Error("Gemini returned an error (" + r.status + ")" + (m ? ": " + m : "."));
+var GAPI = "https://generativelanguage.googleapis.com/v1beta/models";
+function offlineErr(){ var e = new Error("offline"); e.offline = true; return e; }
+function gfetch(url, opts){
+  if (navigator.onLine === false) return Promise.reject(offlineErr());
+  return fetch(url, opts).catch(function(){ throw offlineErr(); });
+}
+function gerr(status, body){
+  var m = (body && body.error && body.error.message) || "";
+  if (status === 400 && /key/i.test(m) || status === 401 || status === 403) return "Gemini rejected the key. Check it in Settings.";
+  if (status === 429) return /per.?day|daily|PerDay/i.test(m) ? "daily" : "Gemini is rate limiting.";
+  if (status === 404) return "Gemini could not find that model.";
+  return "Gemini returned an error (" + status + ")" + (m ? ": " + m : ".");
+}
+/* Ask the key which models it can use, then rank them. Flash-Lite first:
+   sorting a log is easy work and Lite has by far the biggest free daily allowance.
+   Full Flash next, Pro and odd variants never. */
+function modelList(){
+  var saved = load(K_M, null);
+  if (saved && saved.length) return Promise.resolve(saved);
+  return gfetch(GAPI + "?key=" + encodeURIComponent(settings.key.trim()))
+    .then(function(r){ return r.json().catch(function(){ return {}; }).then(function(d){
+      if (!r.ok) { var e = new Error(gerr(r.status, d)); e.status = r.status; throw e; }
+      return d; }); })
+    .then(function(d){
+      var usable = (d.models || []).filter(function(m){
+        return (m.supportedGenerationMethods || []).indexOf("generateContent") >= 0 &&
+          !/embed|aqa|tts|image|live|audio|robotics|computer/.test(m.name);
+      }).map(function(m){ return m.name.replace(/^models\//, ""); });
+      function score(n){
+        var sc = 0;
+        if (/flash/.test(n)) sc += 100;
+        if (/lite/.test(n)) sc += 200;
+        if (/^gemini-3/.test(n)) sc += 50;
+        if (/pro/.test(n)) sc -= 400;
+        if (/preview|exp/.test(n)) sc -= 40;
+        return sc + (parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [0, 0])[1]) || 0);
       }
-      var c = (j.candidates || [])[0] || {}, parts = (c.content && c.content.parts) || [];
-      var txt = parts.map(function(p){ return p.text || ""; }).join("").replace(/```json|```/g, "").trim();
-      var data; try { data = JSON.parse(txt); } catch(e){ throw new Error("Gemini sent back something unreadable. Try Log it again."); }
-      return Array.isArray(data) ? data : (data.entries || []);
+      usable = usable.filter(function(n){ return score(n) > 0; })
+        .sort(function(a, b){ return score(b) - score(a); }).slice(0, 8);
+      if (!usable.length) usable = ["gemini-2.5-flash-lite", "gemini-2.5-flash"];
+      store(K_M, usable);
+      return usable;
+    });
+}
+function modelNote(){
+  var m = load(K_M, null);
+  return m && m.length ? "Models: " + m.slice(0, 3).join(", ") + (m.length > 3 ? " +" + (m.length - 3) + " more" : "") +
+    ". Picked from your key, with backups if one is busy or out of free uses."
+    : "Model: picked automatically from your key, with backups if one is busy or out of free uses.";
+}
+var COOL = {};
+function genConfig(model){
+  var c = { responseMimeType:"application/json", temperature:0.2 };
+  if (/^gemini-2\.5-flash/.test(model)) c.thinkingConfig = { thinkingBudget:0 };
+  else if (/^gemini-3/.test(model) && /flash/.test(model)) c.thinkingConfig = { thinkingLevel:"low" };
+  return c;
+}
+function callModel(model, prompt){
+  return gfetch(GAPI + "/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(settings.key.trim()), {
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ contents:[{ role:"user", parts:[{ text: prompt }] }], generationConfig: genConfig(model) })
+  }).then(function(r){
+    return r.json().catch(function(){ return {}; }).then(function(d){
+      if (r.ok) return d;
+      var e = new Error(gerr(r.status, d)); e.status = r.status; throw e;
     });
   });
 }
+function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+function parseWithGemini(text, when){
+  var prompt = buildPrompt(text, when);
+  return modelList().then(function(all){
+    var fresh = all.filter(function(m){ return !(COOL[m] > Date.now()); });
+    var models = fresh.length ? fresh : all;
+    function attempt(i, tries){
+      var model = models[i];
+      return callModel(model, prompt).catch(function(e){
+        if (e.offline) throw e;
+        var busy = e.status === 500 || e.status === 502 || e.status === 503 || e.status === 504;
+        if (busy && tries < 1) return sleep(500).then(function(){ return attempt(i, tries + 1); });
+        if (e.status === 404) { try { localStorage.removeItem(K_M); } catch(x){} }
+        if (e.status === 429) COOL[model] = Date.now() + (e.message === "daily" ? 6*3600e3 : 65e3);
+        if ((busy || e.status === 429 || e.status === 404) && i + 1 < models.length) return attempt(i + 1, 0);
+        if (busy || e.status === 429) { var q = new Error("busy"); q.busy = true; throw q; }
+        throw e;
+      });
+    }
+    return attempt(0, 0);
+  }).then(function(j){
+    var c = (j.candidates || [])[0] || {}, parts = (c.content && c.content.parts) || [];
+    var txt = parts.map(function(p){ return p.text || ""; }).join("").replace(/```json|```/g, "").trim();
+    var a = txt.indexOf("{"), b = txt.lastIndexOf("}"), data;
+    try { data = JSON.parse(a >= 0 && b > a ? txt.slice(a, b + 1) : txt); }
+    catch(e){ throw new Error("Gemini sent back something unreadable. Try Log it again."); }
+    return Array.isArray(data) ? data : (data.entries || []);
+  });
+}
+
+/* ---------- waiting-to-be-sorted queue ---------- */
+var sortingQueueId = null;
+function enqueue(text){
+  queue.push({ id: uid(), text: text, at: new Date().toISOString() });
+  store(K_Q, queue);
+  $("#log").value = ""; updateLogBtn(); renderQueue();
+}
+function renderQueue(){
+  $("#offline").hidden = navigator.onLine !== false;
+  var box = $("#queue");
+  if (!queue.length) { box.hidden = true; return; }
+  var n = queue.length, first = queue[0], d = new Date(first.at);
+  box.hidden = false;
+  box.innerHTML = "<b>" + n + (n === 1 ? " note" : " notes") + " waiting to be sorted</b>" +
+    "<p>Oldest from " + esc(d.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" }) + ", " + fmtTime(hm(d))) +
+    ": “" + esc(first.text.length > 70 ? first.text.slice(0, 70) + "…" : first.text) + "”</p>" +
+    '<div class="row"><button class="btn" data-act="sortq"' + (navigator.onLine === false || !settings.key ? " disabled" : "") + ">Sort now</button>" +
+    '<button class="btn ghost" data-act="handq">Enter by hand</button></div>';
+}
+function sortNext(){
+  var item = queue[0]; if (!item) return;
+  var b = document.querySelector('[data-act="sortq"]'); if (b) { b.disabled = true; b.innerHTML = 'Sorting <span class="dots"><i></i><i></i><i></i></span>'; }
+  parseWithGemini(item.text, item.at).then(function(list){
+    if (!list.length) { toast("Found nothing to log in that note. Try entering it by hand.", 4500); return; }
+    sortingQueueId = item.id;
+    openConfirm(list.map(function(e){ return normalize(e, item.text); }), item.text, "new");
+  }).catch(function(e){
+    if (e.offline) toast("Still offline. It will wait.");
+    else if (e.busy) toast("Gemini is busy or out of free uses right now. Your note is safe; try again later.", 5000);
+    else toast(e.message, 5000);
+  }).then(renderQueue);
+}
+function dropQueued(id){ queue = queue.filter(function(q){ return q.id !== id; }); store(K_Q, queue); }
 
 /* ---------- capture ---------- */
 var SR = window.SpeechRecognition || window.webkitSpeechRecognition, rec = null, listening = false, baseText = "";
@@ -615,7 +733,7 @@ function updateLogBtn(){ $("#logBtn").disabled = !$("#log").value.trim(); }
 function setMic(){
   $("#mic").classList.toggle("on", listening);
   $("#mic").setAttribute("aria-label", listening ? "Stop talking" : "Start talking");
-  $("#micLabel").textContent = listening ? "Listening. Tap to stop." : "Tap to talk";
+  $("#micLabel").textContent = listening ? "Listening. Tap to stop." : "How are you feeling?";
 }
 $("#mic").addEventListener("click", function(){
   if (!SR) { $("#log").focus(); toast("Tap the mic on your keyboard to dictate."); return; }
@@ -641,21 +759,27 @@ $("#log").addEventListener("input", updateLogBtn);
 $("#logBtn").addEventListener("click", function(){
   var text = $("#log").value.trim(); if (!text) return;
   if (listening && rec) rec.stop();
-  if (!settings.key) { fillSettings(); openSheet("#settings"); toast("Add a Gemini key first, or add entries by hand.", 4000); return; }
+  if (!settings.key) { enqueue(text); toast("Saved for later. Add a Gemini key in Settings to sort it.", 4500); return; }
+  if (navigator.onLine === false) { enqueue(text); toast("You’re offline. Saved, and it will be sorted later.", 4000); return; }
   var b = $("#logBtn"); b.disabled = true; b.innerHTML = 'Sorting it out <span class="dots"><i></i><i></i><i></i></span>';
   parseWithGemini(text).then(function(list){
     if (!list.length) { toast("Found nothing to log in that. Try adding a number or a time.", 4000); return; }
     openConfirm(list.map(function(e){ return normalize(e, text); }), text, "new");
-  }).catch(function(e){ toast(e.message, 5000); })
+  }).catch(function(e){
+    if (e.offline) { enqueue(text); toast("Couldn’t reach Gemini. Saved, and it will be sorted later.", 4500); }
+    else if (e.busy) { enqueue(text); toast("Gemini is busy or out of free uses. Saved to sort later.", 4500); }
+    else toast(e.message, 5000);
+  })
   .then(function(){ b.textContent = "Log it"; updateLogBtn(); });
 });
 
 /* ---------- settings ---------- */
-function fillSettings(){ $("#sName").value = settings.name || ""; $("#sKey").value = settings.key; $("#sModel").value = settings.model; $("#sTarget").value = settings.kcalTarget; }
+function fillSettings(){ $("#sName").value = settings.name || ""; $("#sKey").value = settings.key; $("#sModels").textContent = modelNote(); $("#sTarget").value = settings.kcalTarget; }
 function saveSettings(){
   settings.name = $("#sName").value.trim();
-  settings.key = $("#sKey").value.trim();
-  settings.model = $("#sModel").value.trim() || "gemini-2.5-flash";
+  var newKey = $("#sKey").value.trim();
+  if (newKey !== settings.key) { try { localStorage.removeItem(K_M); } catch(e){} }
+  settings.key = newKey;
   settings.kcalTarget = Math.max(800, Math.min(6000, num($("#sTarget").value) || 2200));
   if (store(K_S, settings)) { closeSheets(); renderAll(); toast("Saved settings"); }
 }
@@ -695,7 +819,11 @@ document.addEventListener("click", function(ev){
     if (e) openConfirm([Object.assign({}, e)], "", "edit"); return; }
   switch (d.act) {
     case "settings": fillSettings(); openSheet("#settings"); break;
-    case "close": closeSheets(); break;
+    case "close": closeSheets(); sortingQueueId = null; break;
+    case "sortq": sortNext(); break;
+    case "handq": { var it = queue[0]; if (!it) break; var d0 = new Date(it.at);
+      var bl = blank("food", ymd(d0)); bl.time = hm(d0);
+      openConfirm([bl], it.text, "new"); sortingQueueId = it.id; } break;
     case "manual": openConfirm([blank("food")], "", "new"); break;
     case "addday": openConfirm([blank("food", selDate)], "", "new"); break;
     case "addcard": pending.push(blank(pending.length ? pending[pending.length-1].type : "food",
@@ -722,7 +850,12 @@ document.addEventListener("keydown", function(ev){ if (ev.key === "Escape") clos
 document.addEventListener("visibilitychange", function(){ if (!document.hidden) renderAll(); });
 setInterval(function(){ if (!document.hidden && !$("#vToday").hidden) renderToday(); }, 60000);
 
-renderToday();
+renderToday(); renderQueue();
+window.addEventListener("online", function(){ renderQueue();
+  if (queue.length && settings.key) toast("Back online. " + queue.length + (queue.length === 1 ? " note is" : " notes are") + " ready to sort.", 4500); });
+window.addEventListener("offline", renderQueue);
+if ("serviceWorker" in navigator) window.addEventListener("load", function(){
+  navigator.serviceWorker.register("sw.js").catch(function(){}); });
 if (!settings.key && !entries.length) setTimeout(function(){ toast("Start in Settings: paste a Gemini key.", 4500); }, 600);
 })();
 </script>
