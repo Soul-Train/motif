@@ -49,6 +49,12 @@
     font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .fact b i{font-style:normal;font-family:Nunito,system-ui,sans-serif;font-size:12.5px;font-weight:800;color:var(--d);margin-left:1px}
   .fact small{display:block;font-size:11.5px;font-weight:600;color:var(--d);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .presets{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:10px;font-size:12.5px;font-weight:800;color:var(--soft)}
+  .presets button{min-height:38px;padding:0 12px;border:none;border-radius:999px;background:#F3E4D3;color:#6A3E18;font-weight:800;font-size:13.5px}
+  .fact.wide{grid-column:1/-1;flex-direction:row;align-items:center;gap:10px}
+  .fact.wide .ic{margin:0;flex:none}
+  .fact.wide .wm{flex:1;min-width:0;display:flex;flex-direction:column}
+  .fact.wide b{font-size:19px;flex:none}
   .fact.off{background:var(--card);box-shadow:none;border:1.5px dashed #DDD6CA}
   .fact.off .ic{background:var(--t)}
   .fact.off b{color:#A8ADA9}
@@ -302,11 +308,12 @@ var ICON = {
   workout:'<path d="M6 8v8M18 8v8M3 10v4M21 10v4M6 12h12"/>',
   vitals:'<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
   note:'<path d="M5 19h4L19 9l-4-4L5 15z"/>',
+  drink:'<path d="M6 4h12l-1.5 9a4.5 4.5 0 0 1-9 0z"/><path d="M12 17.5V21M8.5 21h7"/><path d="M6.8 9h10.4"/>',
   fast:'<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2"/><path d="M9 3h6"/>'
 };
 var TINT = { food:["#FBEBDD","#B8612C","#7A4520"], symptom:["#FBE5E1","#B04A3E","#6E3A33"], mood:["#E1EFEC","#2F7D73","#2C5A53"],
   sleep:["#E6E7F4","#555CA8","#3F4480"], workout:["#E1EFEC","#2F7D73","#2C5A53"], vitals:["#F3E6EC","#A34A6E","#6E3350"],
-  note:["#EFEBE4","#5C625E","#474C49"], fast:["#F4EFD9","#8E7A22","#5E5214"] };
+  note:["#EFEBE4","#5C625E","#474C49"], drink:["#F3E4D3","#9A5B24","#6A3E18"], fast:["#F4EFD9","#8E7A22","#5E5214"] };
 function icon(k, size){ var t = TINT[k] || TINT.note;
   return '<svg width="' + (size || 18) + '" height="' + (size || 18) + '" viewBox="0 0 24 24" fill="none" stroke="' + t[1] +
     '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICON[k] || ICON.note) + "</svg>"; }
@@ -316,6 +323,8 @@ var TYPES = {
   mood:    { label:"Mood",     fields:[["rating","Feeling 1 to 10","number"],["note","Note","text"]] },
   sleep:   { label:"Sleep",    fields:[["hours","Hours slept","number"],["wakeups","Wake-ups","number"],["quality","Quality 1 to 10","number"]] },
   workout: { label:"Workout",  fields:[["kind","What","text"],["minutes","Minutes","number"],["intensity","Effort","select",0,["easy","moderate","hard"]]] },
+  drink:   { label:"Drink",    fields:[["item","What","text",1],["count","How many","number"],["std","Standard drinks (total)","number"],["kcal","Calories (est.)","number"]] },
+  fast:    { label:"Fast",     fields:[["hours","Hours fasted","number"],["note","Note","text"]] },
   vitals:  { label:"Tracker",  fields:[["steps","Steps","number"],["rhr","Resting heart rate","number"]] },
   note:    { label:"Note",     fields:[["text","Note","text",1]] }
 };
@@ -326,6 +335,8 @@ function titleOf(e){
     case "mood": return "Mood" + (num(e.rating) != null ? ", " + num(e.rating) + "/10" : "");
     case "sleep": return "Slept " + (fmtHours(num(e.hours)) || "");
     case "workout": return cap(e.kind || "Workout");
+    case "fast": return "Fasted " + (num(e.hours) != null ? fmtHours(num(e.hours)) : "");
+    case "drink": return num(e.count) > 1 ? num(e.count) + " " + (e.item || "drinks") : cap(e.item || "Drink");
     case "vitals": return "Tracker numbers";
     default: return "Note";
   }
@@ -338,6 +349,9 @@ function subOf(e){
     case "mood": if (e.note) p.push(e.note); break;
     case "sleep": if (num(e.wakeups) != null) p.push("woke " + num(e.wakeups) + (num(e.wakeups) === 1 ? " time" : " times"));
       if (num(e.quality) != null) p.push("quality " + num(e.quality) + "/10"); break;
+    case "fast": if (e.note) p.push(e.note); else p.push("Ended at this time"); break;
+    case "drink": if (num(e.std) != null) p.push("~" + num(e.std) + " standard drink" + (num(e.std) === 1 ? "" : "s"));
+      if (num(e.kcal) != null) p.push("~" + num(e.kcal) + " kcal"); break;
     case "workout": if (num(e.minutes) != null) p.push(num(e.minutes) + " min"); if (e.intensity) p.push(e.intensity); break;
     case "vitals": if (num(e.steps) != null) p.push(num(e.steps).toLocaleString("en-US") + " steps");
       if (num(e.rhr) != null) p.push("resting HR " + num(e.rhr)); break;
@@ -349,7 +363,7 @@ function cap(s){ s = String(s || ""); return s.charAt(0).toUpperCase() + s.slice
 
 /* ---------- day math ---------- */
 function meals(){
-  var ts = entries.filter(function(e){ return e.type === "food" && e.date; })
+  var ts = entries.filter(function(e){ return e.date && (e.type === "food" || (e.type === "drink" && (num(e.kcal) || 0) > 0)); })
     .map(function(e){ return dt(e).getTime(); }).filter(function(t){ return !isNaN(t); })
     .sort(function(a, b){ return a - b; });
   var out = [];
@@ -363,6 +377,11 @@ function fastMap(){
     var g = (m[i].start - m[i-1].end) / 36e5, d = ymd(new Date(m[i].start));
     if (g >= 4 && (!map[d] || g > map[d].h)) map[d] = { h: Math.round(g*2)/2, end: m[i].start };
   }
+  entries.forEach(function(e){
+    var h = num(e.hours);
+    if (e.type === "fast" && h != null && h > 0 && (!map[e.date] || h >= map[e.date].h))
+      map[e.date] = { h: h, end: dt(e).getTime(), stated: true };
+  });
   return map;
 }
 function dayStats(date, fm){
@@ -370,12 +389,15 @@ function dayStats(date, fm){
   function of(t){ return L.filter(function(e){ return e.type === t; }); }
   function rated(list, f){ return list.filter(function(e){ return num(e[f]) != null; }); }
   var food = of("food"), sym = rated(of("symptom"), "rating"), mood = rated(of("mood"), "rating"),
-      sl = rated(of("sleep"), "hours"), wk = of("workout"), vit = of("vitals");
+      sl = rated(of("sleep"), "hours"), wk = of("workout"), vit = of("vitals"), dr = of("drink");
+  var cal = food.concat(dr.filter(function(e){ return num(e.kcal) != null; }));
+  var std = Math.round(dr.reduce(function(a, e){ return a + (num(e.std) != null ? num(e.std) : (num(e.count) || 1)); }, 0) * 10) / 10;
   var worst = sym.reduce(function(a, e){ return !a || num(e.rating) > num(a.rating) ? e : a; }, null);
   var steps = vit.map(function(e){ return num(e.steps); }).filter(function(v){ return v != null; });
   return {
     count: L.length, list: L,
-    kcal: food.length ? food.reduce(function(s, e){ return s + (num(e.kcal) || 0); }, 0) : null,
+    kcal: cal.length ? cal.reduce(function(s, e){ return s + (num(e.kcal) || 0); }, 0) : null,
+    drinks: std, drinkNames: dr.map(function(e){ return e.item; }).filter(Boolean).join(", "),
     pain: worst ? num(worst.rating) : null, painArea: worst ? worst.area : "",
     mood: mood.length ? Math.round(mood.reduce(function(s, e){ return s + num(e.rating); }, 0) / mood.length * 10) / 10 : null,
     sleep: sl.length ? sl.reduce(function(s, e){ return s + num(e.hours); }, 0) : null,
@@ -388,12 +410,14 @@ function dayStats(date, fm){
   };
 }
 
+function tier(std){ return std <= 0 ? 0 : std <= 1.5 ? 1 : std <= 3.5 ? 2 : 3; }
+var TIER = ["Dry day", "Light", "Moderate", "Heavy"];
 function factsHTML(s, isToday){
   function f(label, val, sub, k){ var t = TINT[k];
     return '<div class="fact' + (val == null ? " off" : "") + '" style="--t:' + t[0] + ';--d:' + t[2] + '"><span class="ic">' + icon(k) + "</span><k>" + label + "</k><b>" +
     (val == null ? "&ndash;" : val) + "</b><small>" + esc(sub || (val == null ? "Not logged" : "")) + "</small></div>"; }
   var fastVal = null, fastSub = "";
-  if (s.fast) { fastVal = fmtHours(s.fast.h); fastSub = "Ended " + fmtTime(hm(new Date(s.fast.end))); }
+  if (s.fast) { fastVal = fmtHours(s.fast.h); fastSub = (s.fast.stated ? "Logged, ended " : "Ended ") + fmtTime(hm(new Date(s.fast.end))); }
   else if (isToday) {
     var m = meals(), last = m[m.length-1], now = Date.now();
     if (last && now > last.end) {
@@ -407,7 +431,10 @@ function factsHTML(s, isToday){
     f("Sleep", s.sleep != null ? esc(fmtHours(s.sleep)) : null, s.sleep != null ? (s.wakeups ? "Woke " + s.wakeups + "x" : "Slept through") : "", "sleep") +
     f("Calories", s.kcal != null ? Math.round(s.kcal).toLocaleString("en-US") : null, s.kcal != null ? "of " + Number(settings.kcalTarget).toLocaleString("en-US") : "", "food") +
     f("Fasted", fastVal ? esc(fastVal) : null, fastSub, "fast") +
-    f("Workout", s.workout ? (s.workoutMin ? s.workoutMin + "<i>m</i>" : "Done") : null, s.workout ? cap(s.workoutKind) : (s.steps != null ? s.steps.toLocaleString("en-US") + " steps" : ""), "workout");
+    f("Workout", s.workout ? (s.workoutMin ? s.workoutMin + "<i>m</i>" : "Done") : null, s.workout ? cap(s.workoutKind) : (s.steps != null ? s.steps.toLocaleString("en-US") + " steps" : ""), "workout") +
+    '<div class="fact wide" style="--t:' + TINT.drink[0] + ';--d:' + TINT.drink[2] + '"><span class="ic">' + icon("drink") + "</span>" +
+    '<span class="wm"><k>Alcohol</k><small>' + esc(s.drinks ? (s.drinkNames ? cap(s.drinkNames) : "") : "Nothing logged counts as dry") + "</small></span>" +
+    "<b>" + (s.drinks ? TIER[tier(s.drinks)] + " <i>" + s.drinks + " std</i>" : "Dry") + "</b></div>";
 }
 function entryHTML(e){
   var t = TYPES[e.type] || TYPES.note;
@@ -437,7 +464,8 @@ var PAL = {
   mood:   ["#E1EFEC","#B8DAD3","#7FBDB1","#2F7D73","#1F5C54"],
   sleep:  ["#E6E7F4","#C3C6E8","#9197D1","#555CA8","#3A4088"],
   fast:   ["#F4EFD9","#E7DBA4","#CDB861","#8E7A22","#6B5C12"],
-  workout:["#E1EFEC","#B8DAD3","#7FBDB1","#2F7D73","#1F5C54"]
+  workout:["#E1EFEC","#B8DAD3","#7FBDB1","#2F7D73","#1F5C54"],
+  alcohol:["#E4EEE8","#F3DCC0","#D99A5B","#8A4A1C"]
 };
 var METRICS = {
   kcal: { label:"Calories", val:function(s){ return s.kcal; },
@@ -451,6 +479,7 @@ var METRICS = {
     bin:function(v){ return v < 5.5 ? 0 : v < 6.5 ? 1 : v < 7 ? 2 : v < 7.5 ? 3 : 4; }, lo:"Under 5.5h", hi:"7.5h+" },
   fast: { label:"Fasting", val:function(s){ return s.fast ? s.fast.h : null; },
     bin:function(v){ return v < 12 ? 0 : v < 13 ? 1 : v < 14 ? 2 : v < 16 ? 3 : 4; }, lo:"Under 12h", hi:"16h+" },
+  alcohol: { label:"Alcohol", val:function(s){ return s.drinks; }, bin:tier, lo:"Dry", hi:"Heavy", daily:true },
   workout: { label:"Workout", val:function(s){ return s.workout ? Math.max(1, s.workoutMin) : null; },
     bin:function(v){ return v < 20 ? 2 : v < 45 ? 3 : 4; }, lo:"Short", hi:"45+ min" }
 };
@@ -462,10 +491,12 @@ function renderCal(){
   $("#pills").innerHTML = Object.keys(METRICS).map(function(k){
     return '<button data-metric="' + k + '" aria-pressed="' + (k === metric) + '"' + (k === metric ? ' class="sel"' : "") + ">" + METRICS[k].label + "</button>";
   }).join("");
+  var firstDay = entries.reduce(function(a, e){ return !a || (e.date && e.date < a) ? e.date : a; }, null);
   var html = "", lead = first.getDay(), days = new Date(calY, calM + 1, 0).getDate();
   for (var i = 0; i < lead; i++) html += "<div></div>";
   for (var d = 1; d <= days; d++) {
     var ds = calY + "-" + pad(calM + 1) + "-" + pad(d), s = dayStats(ds, fm), v = M.val(s), cls = "day", style = "";
+    if (M.daily && (ds > today || !firstDay || ds < firstDay)) v = null;
     if (v != null) { var b = M.bin(v); style = "background:" + pal[b] + ";color:" + (b >= 3 ? "#FFFFFF" : "#1F2421"); }
     else cls += s.count ? " nodata" : " none";
     if (ds === today) cls += " today";
@@ -526,6 +557,8 @@ function openConfirm(list, said, mode){
   $("#cSaid").hidden = !said; $("#cSaid").textContent = said ? "\u201C" + said + "\u201D" : "";
   renderCards(); openSheet("#confirm");
 }
+var PRESETS = [["Whiskey", "whiskey, neat", 1, 105], ["Double", "whiskey, double pour", 2, 210], ["Cocktail", "cocktail", 1.75, 220],
+  ["Beer", "beer", 1, 150], ["Wine", "wine", 1, 125]];
 function cardHTML(e, i){
   var t = TYPES[e.type] || TYPES.note;
   var opts = Object.keys(TYPES).map(function(k){ return '<option value="' + k + '"' + (k === e.type ? " selected" : "") + ">" + TYPES[k].label + "</option>"; }).join("");
@@ -543,6 +576,8 @@ function cardHTML(e, i){
     (pendingMode === "edit" ? "" : '<button class="x" data-rm="' + i + '" aria-label="Remove this entry">&times;</button>') + "</div>" +
     '<div class="fields"><label>Date<input type="date" data-i="' + i + '" data-f="date" value="' + esc(e.date) + '"></label>' +
     '<label>Time<input type="time" data-i="' + i + '" data-f="time" value="' + esc(e.time) + '"></label>' + fields + "</div>" +
+    (e.type === "drink" ? '<div class="presets"><span>Quick add:</span>' + PRESETS.map(function(pr, j){
+      return '<button type="button" data-i="' + i + '" data-preset="' + j + '">' + pr[0] + "</button>"; }).join("") + "</div>" : "") +
     (e.question ? '<div class="q">' + esc(e.question) + "</div>" : "") + "</div>";
 }
 function renderCards(){
@@ -583,10 +618,12 @@ function buildPrompt(text, when){
     'Every entry has "type", "date" (YYYY-MM-DD) and "time" (HH:MM, 24-hour), plus the fields for its type:',
     '- sleep: hours (number, total sleep), wakeups (number), quality (1-10). Sleep belongs to the date the person woke up; "last night" ended this morning. Use the wake-up time as "time".',
     '- symptom: area (short body part, e.g. "lower back", "left knee", "head", "stomach"), rating (1-10), note (how it feels, a few words). One entry per body part.',
-    '- food: item (one food per entry), portion (as described, e.g. "1 fist", "palm", "half a plate", "2 eggs"), kcal (best estimate, whole number). Drinks with calories count as food.',
+    '- food: item (one food per entry), portion (as described, e.g. "1 fist", "palm", "half a plate", "2 eggs"), kcal (best estimate, whole number). Non-alcoholic drinks with calories count as food.',
+    '- drink: alcohol only. item (e.g. "whiskey, neat", "old fashioned", "IPA", "red wine"), count (number of drinks), std (total US standard drinks for this entry: a 1.5 oz pour of liquor, 12 oz beer or 5 oz wine = 1; a double or heavy pour = 2; most cocktails = 1.5 to 2; strong IPAs = about 1.5), kcal (total estimate). One entry per kind of drink. If the pour size is unclear, give your best guess and add a question. If they say they had no drinks, create no entry.',
     '- workout: kind, minutes, intensity ("easy", "moderate" or "hard").',
     "- mood: rating (1-10) for how they feel overall, note.",
     "- vitals: steps, rhr (resting heart rate), for numbers read off a fitness tracker. Tracker sleep goes in a sleep entry.",
+    '- fast: hours (number), when they say they fasted or went without food for a stretch (e.g. "fasted 24 hours since dinner yesterday" = 24). Use the time the fast ended as "time", or the current time if it is still going. Only add a food entry for the meal that broke it if they describe what they ate.',
     "- note: text, for anything health related that fits nowhere else.",
     'Portion guide: palm of meat or fish = about 4 oz cooked; fist of rice, pasta, cereal or fruit = about 1 cup; cupped hand of nuts, chips or snacks = about 1 oz; thumb of butter, oil, cheese or peanut butter = about 1 tbsp; a dinner plate is about 10 inches, so "half a plate" of pasta = about 2 cups. Count cooking fat and sauces when mentioned.',
     'Times: use the time said. With no time: "this morning" or breakfast = 08:00, lunch = 12:30, dinner = 18:30, "just now" or nothing said = the current time. "Yesterday" means the day before today.',
@@ -815,6 +852,10 @@ document.addEventListener("click", function(ev){
   if (d.metric) { metric = d.metric; return renderCal(); }
   if (d.day) { selDate = d.day; return renderCal(); }
   if (d.rm != null) { pending.splice(+d.rm, 1); return renderCards(); }
+  if (d.preset != null) { var pe = pending[+d.i], pr = PRESETS[+d.preset];
+    if (pe.item === pr[1]) { pe.count = (num(pe.count) || 1) + 1; pe.std = Math.round(((num(pe.std) || 0) + pr[2]) * 100) / 100; pe.kcal = (num(pe.kcal) || 0) + pr[3]; }
+    else { pe.item = pr[1]; pe.count = 1; pe.std = pr[2]; pe.kcal = pr[3]; }
+    return renderCards(); }
   if (d.edit) { var e = entries.find(function(x){ return x.id === d.edit; });
     if (e) openConfirm([Object.assign({}, e)], "", "edit"); return; }
   switch (d.act) {
